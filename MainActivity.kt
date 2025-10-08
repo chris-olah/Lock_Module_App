@@ -81,10 +81,8 @@ fun getTagSizeInfo(tag: Tag): String {
 fun getTagInfoFull(tag: Tag): String {
     val uid = tag.id.joinToString(":") { "%02X".format(it) }
     val type = tag.techList.joinToString(", ") { it.substringAfterLast(".") }
-
     val nfcA = NfcA.get(tag)
     var writeable = "Unknown"
-    //var canBeReadOnly = "Unknown"
     var maxSize = "Unknown"
 
     if (nfcA != null) {
@@ -92,20 +90,16 @@ fun getTagInfoFull(tag: Tag): String {
             nfcA.connect()
             maxSize = "${nfcA.maxTransceiveLength} bytes"
 
-            // Check for writeable and read-only capability for NTAG
-            // NTAGs generally have a capability container at page 3
             val cmdReadCC = byteArrayOf(0x30.toByte(), 0x03.toByte())
             val cc = nfcA.transceive(cmdReadCC)
 
             if (cc.size >= 4) {
                 val capability = cc[2].toInt() and 0xFF
                 writeable = if ((capability and 0x0F) > 0) "Yes" else "No"
-                //canBeReadOnly = if ((capability and 0x0F) < 0x0F) "Yes" else "No"
             }
 
-        } catch (_: Exception) {
+        } catch (e: Exception) {
             writeable = "Unknown"
-            //canBeReadOnly = "Unknown"
         } finally {
             nfcA.close()
         }
@@ -120,22 +114,18 @@ fun getTagInfoFull(tag: Tag): String {
 }
 
 fun getWriteStatus(tag: Tag): Pair<Boolean, Boolean> {
-    // Returns Pair<isWritable, canBeReadOnly>
     val nfcA = NfcA.get(tag) ?: return Pair(false, false)
     return try {
         nfcA.connect()
-        // Attempt a harmless write to page 4
         val testBytes = byteArrayOf(0x00, 0x00, 0x00, 0x00)
         nfcA.transceive(byteArrayOf(0xA2.toByte(), 0x04) + testBytes)
         nfcA.close()
-        // If no exception, writable and can still be set read-only
         Pair(true, true)
     } catch (_: Exception) {
-        // Write failed — might be read-only
         try {
             nfcA.close()
         } catch (_: Exception) {}
-        Pair(false, true) // assume can still be made read-only
+        Pair(false, true)
     }
 }
 
@@ -172,7 +162,6 @@ class MainActivity : ComponentActivity() {
         nfcAdapter?.disableForegroundDispatch(this)
     }
 
-
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
 
@@ -181,7 +170,6 @@ class MainActivity : ComponentActivity() {
             nfcTagState.value = it
         }
     }
-
 }
 
 // General Container for all App
@@ -245,13 +233,6 @@ fun LockModuleApp(nfcTagState: MutableState<android.nfc.Tag?>) {
                 } finally {
                     nfcA.close()
                 }
-
-                // ---------- Placeholder for MCU / I²C controller ----------
-                // Here you can trigger the microcontroller to read/write
-                // SRAM or EEPROM via I²C for more reliable access
-                // Example:
-                // controller.readSRAM()
-                // ------------------------------------------------------------
 
             } catch (e: Exception) {
                 currentScreen = "nak"
@@ -382,7 +363,7 @@ fun Phase1Screen(onHashKeySaved: (String) -> Unit) {
     }
 }
 
-// Simulated Lock and Unlock
+// Simulated Lock and Unlock for debugging
 @Composable
 fun Phase2Screen(isLooking: Boolean, onTagScanned: (String) -> Unit) {
     Box(
@@ -402,7 +383,6 @@ fun OKScreen(tagInfo: SimpleTagInfo?) {
             .background(Color(0xFF0D1B2A))
             .padding(16.dp)
     ) {
-        // LOCK OPENING text at the top
         Text(
             "LOCK OPENING",
             color = Color.White,
@@ -412,7 +392,6 @@ fun OKScreen(tagInfo: SimpleTagInfo?) {
                 .padding(top = 32.dp)
         )
 
-        // Center row: Serial Number and Tag Type
         tagInfo?.let { info ->
             Column(
                 horizontalAlignment = Alignment.Start,
@@ -445,9 +424,6 @@ fun OKScreen(tagInfo: SimpleTagInfo?) {
     }
 }
 
-
-
-
 // Not verified LOCK signature and user hash key
 @Composable
 fun NAKScreen() {
@@ -474,6 +450,7 @@ fun NAKScreen() {
     }
 }
 
+// Settings screen container
 @Composable
 fun SettingsScreen(
     currentKey: String?,
@@ -548,8 +525,7 @@ fun SettingsScreen(
     }
 }
 
-
-
+// Gear Icon to allow opening of settings when clicked
 @Composable
 fun GearIcon(showSettings: MutableState<Boolean>) {
     Box(modifier = Modifier.fillMaxSize()) {
@@ -568,6 +544,7 @@ fun GearIcon(showSettings: MutableState<Boolean>) {
     }
 }
 
+// Reset Icon to allow user to go back to inital screen
 @Composable
 fun ResetIcon(onReset: () -> Unit) {
     Box(modifier = Modifier.fillMaxSize()) {
@@ -586,6 +563,7 @@ fun ResetIcon(onReset: () -> Unit) {
     }
 }
 
+// Icon to allow dev admin changes open up
 @Composable
 fun DevIcon(onClick: () -> Unit) {
     Box(modifier = Modifier.fillMaxSize()) {
@@ -604,6 +582,7 @@ fun DevIcon(onClick: () -> Unit) {
     }
 }
 
+// Icon to allow SRAM modifications
 @Composable
 fun SRAMIcon(showSram: MutableState<Boolean>) {
     Box(modifier = Modifier.fillMaxSize()) {
@@ -622,7 +601,7 @@ fun SRAMIcon(showSram: MutableState<Boolean>) {
     }
 }
 
-
+// Dev Screen container to hold dev changes
 @Composable
 fun DevScreen(
     nfcTagState: MutableState<Tag?>,
@@ -635,15 +614,12 @@ fun DevScreen(
     var rawPages by remember { mutableStateOf<List<String>>(emptyList()) }
     var sramContent by remember { mutableStateOf<String?>(null) }
 
-    // Queue of pending writes: Pair<Int pageNum, ByteArray data>
     val pendingSramWrites = remember { mutableStateListOf<Pair<Int, ByteArray>>() }
     var writePending by remember { mutableStateOf(false) }
 
-    // Input fields for custom writes
     var writePage by remember { mutableStateOf("") }
     var writeData by remember { mutableStateOf("") }
 
-    // ---- Scan effect ----
     LaunchedEffect(nfcTagState.value) {
         nfcTagState.value?.let { tag ->
             try {
@@ -704,10 +680,6 @@ fun DevScreen(
                 }
                 rawPages = pages
                 nfcA.close()
-
-                // ---- Execute queued writes ----
-
-
             } catch (e: Exception) {
                 tagInfo = "Error reading/writing tag: ${e.message}"
             }
@@ -721,8 +693,6 @@ fun DevScreen(
             .padding(16.dp)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-
-            // --- Tag info + raw pages ---
             Box(
                 modifier = Modifier
                     .weight(1f)
@@ -742,18 +712,13 @@ fun DevScreen(
                     }
                 }
             }
-
             Spacer(Modifier.height(16.dp))
-
-            // --- Bottom: write queue + SRAM ---
             Column(
                 modifier = Modifier
                     .weight(2f)
                     .fillMaxWidth()
                     .verticalScroll(rememberScrollState())
             ) {
-
-                // Custom write input
                 Text("Queue Custom Write", color = Color.Cyan, fontSize = 18.sp)
                 Spacer(Modifier.height(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -810,7 +775,6 @@ fun DevScreen(
                     )
                 }
 
-                // Button for single-page F2 write
                 Spacer(Modifier.height(16.dp))
                 Button(
                     onClick = {
@@ -826,8 +790,6 @@ fun DevScreen(
                 }
             }
         }
-
-        // Close DevScreen
         IconButton(
             onClick = { showDev.value = false },
             modifier = Modifier.align(Alignment.TopEnd)
@@ -837,7 +799,7 @@ fun DevScreen(
     }
 }
 
-
+// SRAM Screen conatiner
 @Composable
 fun SRAMScreen(onClick: () -> Unit) {
     Column(
